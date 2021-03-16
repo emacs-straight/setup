@@ -4,8 +4,8 @@
 
 ;; Author: Philip K. <philipk@posteo.net>
 ;; Maintainer: Philip K. <philipk@posteo.net>
-;; Version: 0.1.0
-;; Package-Requires: ((emacs "26.1"))
+;; Version: 0.1.1
+;; Package-Requires: ((emacs "24.4"))
 ;; Keywords: lisp, local
 
 ;; This package is Free Software: you can redistribute it and/or modify
@@ -81,6 +81,9 @@
 (defvar setup-macros nil
   "Local macro definitions to be bound in `setup' bodies.")
 
+(defvar setup-edebug-specifications nil
+  "Part of the edebug specification for `setup'.")
+
 ;;;###autoload
 (defun setup-make-docstring ()
   "Return a docstring for `setup'."
@@ -88,10 +91,13 @@
     (insert (documentation (symbol-function 'setup) 'raw))
     (dolist (sym (sort (mapcar #'car setup-macros)
                        #'string-lessp))
-      (let ((sig (if (get sym 'setup-signature)
-                     (cons sym (get sym 'setup-signature))
-                   (list sym))))
-        (insert (format " - %s\n\n" sig)
+      (let ((sig (mapcar
+                  (lambda (arg)
+                    (if (string-match "\\`&" (symbol-name arg))
+                        arg
+                      (intern (upcase (symbol-name arg)))))
+                  (get sym 'setup-signature))))
+        (insert (format " - %s\n\n" (cons sym sig))
                 (or (get sym 'setup-documentation)
                     "No documentation.")
                 "\n\n")))
@@ -122,55 +128,59 @@ The following local macros are defined in a `setup' body:\n\n"
   "Define `setup'-local macro NAME using function FN.
 The plist OPTS may contain the key-value pairs:
 
-  :name
+  :name NAME
 Specify a function to use, for extracting the feature name of a
 NAME entry, if it is the first element in a setup macro.
 
-  :indent
+  :indent SPEC
 Change indentation behaviour.  See symbol `lisp-indent-function'.
 
-  :after-loaded
+  :after-loaded BOOL
 Wrap the macro in a `with-eval-after-load' body.
 
-  :repeatable
-Allow macro to be automatically repeated, using FN's arity.
+  :repeatable ARITY
+Allow macro to be automatically repeated.
 
-  :signature
+  :signature SIG
 Give an advertised calling convention.
 
-  :documentation
+  :documentation STRING
 A documentation string.
 
-  :debug
-A edebug specification, see Info node `(elisp)
-Specification List'.  If not given, it is assumed nothing is
-evaluated.  If macro is :repeatable, a &rest will be added before
-the specification."
+  :debug SPEC
+A edebug specification, see Info node `(elisp) Specification List'.
+If not given, it is assumed nothing is evaluated."
   (declare (indent 1))
+  ;; NB.: NAME is not required to by a keyword, even though all macros
+  ;;      specified on the next page use keywords.  The rationale for
+  ;;      this is currently that there is no clean way to "locally"
+  ;;      modify indentation, without setting `lisp-indent-function',
+  ;;      chaining the indentation behaviour everywhere.
   (cl-assert (symbolp name))
   (cl-assert (functionp fn))
   (cl-assert (listp opts))
   ;; save metadata
   (put name 'setup-documentation (plist-get opts :documentation))
-  (put name 'setup-signature (plist-get opts :signature))
+  (put name 'setup-signature
+       (or (plist-get opts :signature)
+           (append (help-function-arglist fn 'preserve-names)
+                   (if (plist-get opts :repeatable) '(...)))))
   (put name 'setup-shorthand (plist-get opts :shorthand))
   (put name 'lisp-indent-function (plist-get opts :indent))
-  (put name 'setup-indent (plist-get opts :indent))
-  (put name 'setup-repeatable (plist-get opts :repeatable))
   (put name 'setup-debug (plist-get opts :debug))
   ;; forget previous definition
   (setq setup-macros (delq (assq name setup-macros)
                            setup-macros))
   ;; define macro for `cl-macrolet'
-  (push (let* ((arity (func-arity fn))
-               (body (if (plist-get opts :repeatable)
+  (push (let* ((arity (plist-get opts :repeatable))
+               (body (if arity
                          `(progn
-                            (unless (zerop (mod (length args) ,(car arity)))
+                            (unless (zerop (mod (length args) ,arity))
                               (error "Illegal arguments"))
                             (let (aggr)
                               (while args
-                                (let ((rest (nthcdr ,(car arity) args)))
-                                  (setf (nthcdr ,(car arity) args) nil)
+                                (let ((rest (nthcdr ,arity args)))
+                                  (setf (nthcdr ,arity args) nil)
                                   (push (apply #',fn args) aggr)
                                   (setq args rest)))
                               `(progn ,@(nreverse aggr))))
@@ -180,31 +190,36 @@ the specification."
                       `(with-eval-after-load setup-name ,,body))
             `(,name (&rest args) `,,body)))
         setup-macros)
+  ;; update edebug specification for `setup'
+  (setq setup-edebug-specifications
+        (delq (assoc (symbol-name name)
+                     setup-edebug-specifications)
+              setup-edebug-specifications))
+  ;; FIXME: Use `&interpose' in Emacs≥28.
+  (push `(,(symbol-name name)
+          ,@(and (or (plist-get opts :repeatable)
+                     (null (plist-get opts :debug)))
+                 '(&rest))
+          ,@(or (plist-get opts :debug)
+                '(sexp)))
+        setup-edebug-specifications)
   (put 'setup 'edebug-form-spec
-       (let (specs)
-         (dolist (name (mapcar #'car setup-macros))
-           (let ((body (cond ((eq (get name 'setup-debug) 'none) nil)
-                             ((get name 'setup-debug) nil)
-                             ('(sexp)))))
-             (push (if (get name 'setup-repeatable)
-                       `(,(symbol-name name) &rest ,@body)
-                     `(,(symbol-name name) ,@body))
-                   specs)))
-         `(&rest &or [symbolp sexp] ,@specs form))))
+       (append '(&rest &or [symbolp sexp])
+               setup-edebug-specifications
+               '(form))))
 
 
 ;;; definitions of `setup' keywords
 
 (setup-define :with-feature
-  (lambda (name &rest body)
-    `(let ((setup-name ',name))
+  (lambda (feature &rest body)
+    `(let ((setup-name ',feature))
        (ignore setup-name)
-       (:with-mode ,(if (string-match-p "-mode\\'" (symbol-name name))
-                        name
-                      (intern (format "%s-mode" name)))
+       (:with-mode ,(if (string-match-p "-mode\\'" (symbol-name feature))
+                        feature
+                      (intern (format "%s-mode" feature)))
          ,@body)))
-  :signature '(SYSTEM &body BODY)
-  :documentation "Change the SYSTEM that BODY is configuring."
+  :documentation "Change the FEATURE that BODY is configuring."
   :debug '(sexp setup)
   :indent 1)
 
@@ -215,7 +230,6 @@ the specification."
            (setup-hook ',(intern (format "%s-hook" mode))))
        (ignore setup-mode setup-map setup-hook)
        ,@body))
-  :signature '(MODE &body BODY)
   :documentation "Change the MODE that BODY is configuring."
   :debug '(sexp setup)
   :indent 1)
@@ -224,7 +238,6 @@ the specification."
   (lambda (map &rest body)
     `(let ((setup-map ',map))
        ,@body))
-  :signature '(MAP &body BODY)
   :documentation "Change the MAP that BODY will bind to"
   :debug '(sexp setup)
   :indent 1)
@@ -233,7 +246,6 @@ the specification."
   (lambda (hook &rest body)
     `(let ((setup-hook ',hook))
        ,@body))
-  :signature '(HOOK &body BODY)
   :documentation "Change the HOOK that BODY will use."
   :debug '(sexp setup)
   :indent 1)
@@ -242,43 +254,39 @@ the specification."
   (lambda (package)
     `(unless (package-installed-p ',package)
        (package-install ',package)))
-  :signature '(PACKAGE ...)
   :documentation "Install PACKAGE if it hasn't been installed yet."
   :shorthand #'cadr
-  :repeatable t)
+  :repeatable 1)
 
 (setup-define :require
   (lambda (feature)
     `(require ',feature))
-  :signature '(FEATURE ...)
   :documentation "Eagerly require FEATURE."
   :shorthand #'cadr
-  :repeatable t)
+  :repeatable 1)
 
 (setup-define :global
-  (lambda (key fn)
+  (lambda (key command)
     `(global-set-key
       ,(cond ((stringp key) (kbd key))
              ((symbolp key) `(kbd ,key))
              (key))
-      #',fn))
-  :signature '(KEY FUNCTION ...)
-  :documentation "Globally bind KEY to FUNCTION."
+      #',command))
+  :documentation "Globally bind KEY to COMMAND."
   :debug '(form [&or [symbolp sexp] form])
-  :repeatable t)
+  :repeatable 2)
 
 (setup-define :bind
-  (lambda (key fn)
+  (lambda (key command)
     `(define-key (eval setup-map)
        ,(if (or (symbolp key) (stringp key))
             `(kbd ,key)
           ,key)
-       #',fn))
-  :signature '(KEY FUNCTION ...)
-  :documentation "Bind KEY to FUNCTION in current map."
+       #',command))
+  :documentation "Bind KEY to COMMAND in current map."
   :after-loaded t
   :debug '(form [&or [symbolp sexp] form])
-  :repeatable t)
+  :repeatable 2)
 
 (setup-define :unbind
   (lambda (key)
@@ -287,61 +295,56 @@ the specification."
               `(kbd ,key)
           ,key)
        nil))
-  :signature '(KEY ...)
   :documentation "Unbind KEY in current map."
   :after-loaded t
   :debug '(form)
-  :repeatable t)
+  :repeatable 1)
 
 (setup-define :rebind
-  (lambda (key fn)
+  (lambda (key command)
     `(progn
-       (dolist (key (where-is-internal ',fn (eval setup-map)))
+       (dolist (key (where-is-internal ',command (eval setup-map)))
          (define-key (eval setup-map) key nil))
        (define-key (eval setup-map)
          ,(if (or (symbolp key) (stringp key))
               `(kbd ,key)
             ,key)
-         #',fn)))
-  :signature '(KEY FUNCTION ...)
-  :documentation "Unbind the current key for FUNCTION, and bind it to KEY."
+         #',command)))
+  :documentation "Unbind the current key for COMMAND, and bind it to KEY."
   :after-loaded t
-  :repeatable t)
+  :repeatable 2)
 
 (setup-define :hook
-  (lambda (hook)
-    `(add-hook setup-hook #',hook))
-  :signature '(FUNCTION ...)
+  (lambda (function)
+    `(add-hook setup-hook #',function))
   :documentation "Add FUNCTION to current hook."
   :debug '(form [&or [symbolp sexp] form])
-  :repeatable t)
+  :repeatable 1)
 
 (setup-define :hook-into
   (lambda (mode)
     `(add-hook ',(intern (concat (symbol-name mode) "-hook"))
                setup-mode))
-  :signature '(HOOK ...)
   :documentation "Add current mode to HOOK."
-  :repeatable t)
+  :repeatable 1)
 
 (setup-define :option
-  (lambda (var val)
-    (cond ((symbolp var) t)
-          ((eq (car-safe var) 'append)
-           (setq var (cadr var)
-                 val `(append (funcall (or (get ',var 'custom-get)
+  (lambda (name val)
+    (cond ((symbolp name) t)
+          ((eq (car-safe name) 'append)
+           (setq name (cadr name)
+                 val `(append (funcall (or (get ',name 'custom-get)
                                            #'symbol-value)
-                                       ',var)
+                                       ',name)
                               (list ,val))))
-          ((eq (car-safe var) 'prepend)
-           (setq var (cadr var)
+          ((eq (car-safe name) 'prepend)
+           (setq name (cadr name)
                  val `(cons ,val
-                            (funcall (or (get ',var 'custom-get)
+                            (funcall (or (get ',name 'custom-get)
                                          #'symbol-value)
-                                     ',var))))
-          ((error "Invalid variable %S" var)))
-    `(customize-set-variable ',var ,val "Modified by `setup'"))
-  :signature '(NAME VAL ...)
+                                     ',name))))
+          ((error "Invalid option %S" name)))
+    `(customize-set-variable ',name ,val "Modified by `setup'"))
   :documentation "Set the option NAME to VAL.
 
 NAME may be a symbol, or a cons-cell.  If NAME is a cons-cell, it
@@ -349,14 +352,13 @@ will use the car value to modify the behaviour.  If NAME has the
 form (append VAR), VAL is appended to VAR.  If NAME has the
 form (prepend VAR), VAL is prepended to VAR."
   :debug '(sexp form)
-  :repeatable t)
+  :repeatable 2)
 
 (setup-define :hide-mode
   (lambda ()
     `(delq (assq setup-mode minor-mode-alist)
            minor-mode-alist))
   :documentation "Hide the mode-line lighter of the current mode."
-  :debug 'none
   :after-loaded t)
 
 (setup-define :local-set
@@ -370,7 +372,6 @@ form (prepend VAR), VAL is prepended to VAR."
                  val `(cons ,val ,name)))
           ((error "Invalid variable %S" name)))
     `(add-hook setup-hook (lambda () (setq-local ,name ,val))))
-  :signature '(name VAL ...)
   :documentation "Set the value of NAME to VAL in buffers of the current mode.
 
 NAME may be a symbol, or a cons-cell.  If NAME is a cons-cell, it
@@ -378,46 +379,41 @@ will use the car value to modify the behaviour.  If NAME has the
 form (append VAR), VAL is appended to VAR.  If NAME has the
 form (prepend VAR), VAL is prepended to VAR."
   :debug '(sexp form)
-  :repeatable t)
+  :repeatable 2)
 
 (setup-define :local-hook
-  (lambda (hook fn)
+  (lambda (hook function)
     `(add-hook setup-hook
                (lambda ()
-                 (add-hook ',hook #',fn nil t))))
-  :signature '(HOOK FUNCTION ...)
+                 (add-hook ',hook #',function nil t))))
   :documentation "Add FUNCTION to HOOK only in buffers of the current mode."
   :debug '(symbolp form)
-  :repeatable t)
+  :repeatable 2)
 
 (setup-define :also-load
   (lambda (feature)
     `(require ',feature))
-  :signature '(FEATURE ...)
   :documentation "Load FEATURE with the current body."
-  :repeatable t
+  :repeatable 1
   :after-loaded t)
 
 (setup-define :needs
-  (lambda (binary)
-    `(unless (executable-find ,binary)
+  (lambda (executable)
+    `(unless (executable-find ,executable)
        (throw 'setup-exit nil)))
-  :signature '(PROGRAM ...)
-  :documentation "If PROGRAM is not in the path, stop here."
-  :repeatable t)
+  :documentation "If EXECUTABLE is not in the path, stop here."
+  :repeatable 1)
 
-(setup-define :if
+(setup-define :only-if
   (lambda (condition)
     `(unless ,condition
        (throw 'setup-exit nil)))
-  :signature '(CONDITION ...)
   :documentation "If CONDITION is non-nil, stop evaluating the body."
   :debug '(form)
-  :repeatable t)
+  :repeatable 1)
 
 (setup-define :when-loaded
   (lambda (&rest body) `(progn ,@body))
-  :signature '(&body BODY)
   :documentation "Evaluate BODY after the current feature has been loaded."
   :debug '(body)
   :after-loaded t)
