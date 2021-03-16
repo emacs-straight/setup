@@ -5,7 +5,7 @@
 ;; Author: Philip K. <philipk@posteo.net>
 ;; Maintainer: Philip K. <philipk@posteo.net>
 ;; Version: 0.1.1
-;; Package-Requires: ((emacs "24.4"))
+;; Package-Requires: ((emacs "26.1"))
 ;; Keywords: lisp, local
 
 ;; This package is Free Software: you can redistribute it and/or modify
@@ -31,7 +31,6 @@
 ;;         (:global key shell)
 ;;         (:bind key bury-buffer)))
 ;;
-;;
 ;;     (setup (:package paredit)
 ;;       (:hide-mode)
 ;;       (:hook-into scheme-mode lisp-mode))
@@ -49,7 +48,6 @@
 ;;     (with-eval-after-load 'shell
 ;;        (define-key shell-mode-map (kbd "C-c s") #'bury-buffer))
 ;;
-;;
 ;;     (unless (package-install-p 'paredit)
 ;;       (package-install 'paredit ))
 ;;     (delq (assq 'paredit-mode minor-mode-alist)
@@ -63,8 +61,8 @@
 ;;      (dolist (key (where-is-internal 'yas-expand yas-minor-mode-map))
 ;;      (define-key yas-minor-mode-map key nil))
 ;;      (define-key yas-minor-mode-map "<backtab>" #'yas-expand)
-;;      (customize-set-variable 'yas-prompt-functions '(yas-completing-prompt))
-;;      (customize-set-variable 'yas-wrap-around-region t))
+;;    (customize-set-variable 'yas-prompt-functions '(yas-completing-prompt))
+;;    (customize-set-variable 'yas-wrap-around-region t))
 ;;    (add-hook 'prog-mode-hook #'yas-minor-mode)
 
 
@@ -72,11 +70,6 @@
 ;; known keywords are documented in the docstring for `setup'.
 
 ;;; Code:
-
-(eval-when-compile (require 'cl-lib))
-
-
-;;; `setup' macros
 
 (defvar setup-macros nil
   "Local macro definitions to be bound in `setup' bodies.")
@@ -110,16 +103,18 @@ BODY may contain special forms defined by `setup-define', but
 will otherwise just be evaluated as is.
 
 The following local macros are defined in a `setup' body:\n\n"
-  (declare (debug (sexp body)) (indent defun))
+  (declare (debug (&rest &or [symbolp sexp] form))
+           (indent defun))
   (when (consp name)
     (let ((shorthand (get (car name) 'setup-shorthand)))
       (when shorthand
         (push name body)
         (setq name (funcall shorthand name)))))
-  `(cl-macrolet ,setup-macros
-     (catch 'setup-exit
-       (:with-feature ,name ,@body)
-       t)))
+  (macroexpand-all
+   `(catch 'setup-exit
+      (:with-feature ,name ,@body)
+      t)
+   (append setup-macros macroexpand-all-environment)))
 
 ;;;###autoload
 (put 'setup 'function-documentation '(setup-make-docstring))
@@ -139,7 +134,8 @@ Change indentation behaviour.  See symbol `lisp-indent-function'.
 Wrap the macro in a `with-eval-after-load' body.
 
   :repeatable ARITY
-Allow macro to be automatically repeated.
+Allow macro to be automatically repeated.  If ARITY is t, use
+`func-arity' to determine the minimal number of arguments.
 
   :signature SIG
 Give an advertised calling convention.
@@ -156,9 +152,8 @@ If not given, it is assumed nothing is evaluated."
   ;;      this is currently that there is no clean way to "locally"
   ;;      modify indentation, without setting `lisp-indent-function',
   ;;      chaining the indentation behaviour everywhere.
-  (cl-assert (symbolp name))
-  (cl-assert (functionp fn))
-  (cl-assert (listp opts))
+  (unless (symbolp name)
+    (error "Macro name must be a symbol"))
   ;; save metadata
   (put name 'setup-documentation (plist-get opts :documentation))
   (put name 'setup-signature
@@ -167,46 +162,36 @@ If not given, it is assumed nothing is evaluated."
                    (if (plist-get opts :repeatable) '(...)))))
   (put name 'setup-shorthand (plist-get opts :shorthand))
   (put name 'lisp-indent-function (plist-get opts :indent))
-  (put name 'setup-debug (plist-get opts :debug))
-  ;; forget previous definition
-  (setq setup-macros (delq (assq name setup-macros)
-                           setup-macros))
-  ;; define macro for `cl-macrolet'
-  (push (let* ((arity (plist-get opts :repeatable))
-               (body (if arity
-                         `(progn
-                            (unless (zerop (mod (length args) ,arity))
-                              (error "Illegal arguments"))
-                            (let (aggr)
-                              (while args
-                                (let ((rest (nthcdr ,arity args)))
-                                  (setf (nthcdr ,arity args) nil)
-                                  (push (apply #',fn args) aggr)
-                                  (setq args rest)))
-                              `(progn ,@(nreverse aggr))))
-                       `(apply #',fn args))))
+  ;; define macro for `macroexpand-all'
+  (setf (alist-get name setup-macros)   ;New in Emacs-25.
+        (let* ((arity (if (eq (plist-get opts :repeatable) t)
+                          (car (func-arity fn))
+                        (plist-get opts :repeatable)))
+               (fn (if (null arity) fn
+                     (lambda (&rest args)
+                       (unless (zerop (mod (length args) arity))
+                         (error "Illegal arguments"))
+                       (let (aggr)
+                         (while args
+                           (let ((rest (nthcdr arity args)))
+                             (setf (nthcdr arity args) nil)
+                             (push (apply fn args) aggr)
+                             (setq args rest)))
+                         `(progn ,@(nreverse aggr)))))))
           (if (plist-get opts :after-loaded)
-              `(,name (&rest args)
-                      `(with-eval-after-load setup-name ,,body))
-            `(,name (&rest args) `,,body)))
-        setup-macros)
-  ;; update edebug specification for `setup'
-  (setq setup-edebug-specifications
-        (delq (assoc (symbol-name name)
-                     setup-edebug-specifications)
-              setup-edebug-specifications))
-  ;; FIXME: Use `&interpose' in Emacs≥28.
-  (push `(,(symbol-name name)
-          ,@(and (or (plist-get opts :repeatable)
-                     (null (plist-get opts :debug)))
-                 '(&rest))
-          ,@(or (plist-get opts :debug)
-                '(sexp)))
-        setup-edebug-specifications)
-  (put 'setup 'edebug-form-spec
-       (append '(&rest &or [symbolp sexp])
-               setup-edebug-specifications
-               '(form))))
+              (lambda (&rest args)
+                `(with-eval-after-load setup-name ,(apply fn args)))
+            fn)))
+  ;; FIXME: Use `&interpose' with `edebug-lexical-macro-ctx' in Emacs≥28;
+  ;; see `cl-macrolet' how to do it.
+  (setf (alist-get (symbol-name name)
+                   (cdddr (get 'setup 'edebug-form-spec))
+                   nil nil #'equal)
+        (let ((spec (plist-get opts :debug)))
+          (cond ((null spec) '(&rest sexp))
+                ((plist-get opts :repeatable)
+                 (cons '&rest spec))
+                (t spec)))))
 
 
 ;;; definitions of `setup' keywords
@@ -256,14 +241,14 @@ If not given, it is assumed nothing is evaluated."
        (package-install ',package)))
   :documentation "Install PACKAGE if it hasn't been installed yet."
   :shorthand #'cadr
-  :repeatable 1)
+  :repeatable t)
 
 (setup-define :require
   (lambda (feature)
     `(require ',feature))
   :documentation "Eagerly require FEATURE."
   :shorthand #'cadr
-  :repeatable 1)
+  :repeatable t)
 
 (setup-define :global
   (lambda (key command)
@@ -274,7 +259,7 @@ If not given, it is assumed nothing is evaluated."
       #',command))
   :documentation "Globally bind KEY to COMMAND."
   :debug '(form [&or [symbolp sexp] form])
-  :repeatable 2)
+  :repeatable t)
 
 (setup-define :bind
   (lambda (key command)
@@ -286,7 +271,7 @@ If not given, it is assumed nothing is evaluated."
   :documentation "Bind KEY to COMMAND in current map."
   :after-loaded t
   :debug '(form [&or [symbolp sexp] form])
-  :repeatable 2)
+  :repeatable t)
 
 (setup-define :unbind
   (lambda (key)
@@ -298,7 +283,7 @@ If not given, it is assumed nothing is evaluated."
   :documentation "Unbind KEY in current map."
   :after-loaded t
   :debug '(form)
-  :repeatable 1)
+  :repeatable t)
 
 (setup-define :rebind
   (lambda (key command)
@@ -312,21 +297,21 @@ If not given, it is assumed nothing is evaluated."
          #',command)))
   :documentation "Unbind the current key for COMMAND, and bind it to KEY."
   :after-loaded t
-  :repeatable 2)
+  :repeatable t)
 
 (setup-define :hook
   (lambda (function)
     `(add-hook setup-hook #',function))
   :documentation "Add FUNCTION to current hook."
   :debug '(form [&or [symbolp sexp] form])
-  :repeatable 1)
+  :repeatable t)
 
 (setup-define :hook-into
   (lambda (mode)
     `(add-hook ',(intern (concat (symbol-name mode) "-hook"))
                setup-mode))
   :documentation "Add current mode to HOOK."
-  :repeatable 1)
+  :repeatable t)
 
 (setup-define :option
   (lambda (name val)
@@ -352,7 +337,7 @@ will use the car value to modify the behaviour.  If NAME has the
 form (append VAR), VAL is appended to VAR.  If NAME has the
 form (prepend VAR), VAL is prepended to VAR."
   :debug '(sexp form)
-  :repeatable 2)
+  :repeatable t)
 
 (setup-define :hide-mode
   (lambda ()
@@ -379,7 +364,7 @@ will use the car value to modify the behaviour.  If NAME has the
 form (append VAR), VAL is appended to VAR.  If NAME has the
 form (prepend VAR), VAL is prepended to VAR."
   :debug '(sexp form)
-  :repeatable 2)
+  :repeatable t)
 
 (setup-define :local-hook
   (lambda (hook function)
@@ -388,13 +373,13 @@ form (prepend VAR), VAL is prepended to VAR."
                  (add-hook ',hook #',function nil t))))
   :documentation "Add FUNCTION to HOOK only in buffers of the current mode."
   :debug '(symbolp form)
-  :repeatable 2)
+  :repeatable t)
 
 (setup-define :also-load
   (lambda (feature)
     `(require ',feature))
   :documentation "Load FEATURE with the current body."
-  :repeatable 1
+  :repeatable t
   :after-loaded t)
 
 (setup-define :needs
@@ -410,7 +395,7 @@ form (prepend VAR), VAL is prepended to VAR."
        (throw 'setup-exit nil)))
   :documentation "If CONDITION is non-nil, stop evaluating the body."
   :debug '(form)
-  :repeatable 1)
+  :repeatable t)
 
 (setup-define :when-loaded
   (lambda (&rest body) `(progn ,@body))
