@@ -27,46 +27,42 @@
 ;; The `setup' macro simplifies repetitive configuration patterns.
 ;; For example, these macros:
 
-;;     (setup shell
-;;       (let ((key "C-c s"))
-;;         (:global key shell)
-;;         (:bind key bury-buffer)))
+;;    (setup shell
+;;      (let ((key (kbd "C-c s")))
+;;        (:global key shell)
+;;        (:bind key bury-buffer)))
 ;;
-;;     (setup (:package paredit)
-;;       (:hide-mode)
-;;       (:hook-into scheme-mode lisp-mode))
+;;    (setup dired
+;;      (:also-load dired-x)
+;;      (:option (prepend dired-guess-shell-alist-user) '("" "xdg-open")
+;;               dired-dwim-target t)
+;;      (:hook auto-revert-mode))
 ;;
-;;    (setup (:package yasnippet)
-;;      (:with-mode yas-minor-mode
-;;        (:rebind "<backtab>" yas-expand)
-;;        (:option yas-prompt-functions '(yas-completing-prompt)
-;;               yas-wrap-around-region t)
-;;        (:hook-into prog-mode)))
+;;    (setup (:package paredit)
+;;      (:hide-mode)
+;;      (:hook-into scheme-mode lisp-mode))
 
 ;; will be replaced with the functional equivalent of
 
-;;     (global-set-key (kbd "C-c s") #'shell)
-;;     (with-eval-after-load 'shell
-;;        (define-key shell-mode-map (kbd "C-c s") #'bury-buffer))
+;;    (global-set-key (kbd "C-c s") #'shell)
+;;    (with-eval-after-load 'shell
+;;      (define-key shell-mode-map (kbd "C-c s") #'bury-buffer))
 ;;
-;;     (unless (package-install-p 'paredit)
-;;       (package-install 'paredit ))
-;;     (setq minor-mode-alist
-;;           (delq (assq 'paredit-mode minor-mode-alist)
-;;                 minor-mode-alist)
-;;     (add-hook 'scheme-mode-hook #'paredit-mode)
-;;     (add-hook 'lisp-mode-hook #'paredit-mode)
+;;    (with-eval-after-load 'dired
+;;      (require 'dired-x))
+;;    (customize-set-variable 'dired-guess-shell-alist-user
+;;                            (cons '("" "xdg-open")
+;;                                  dired-guess-shell-alist-user))
+;;    (customize-set-variable 'dired-dwim-target t)
+;;    (add-hook 'dired-mode-hook #'auto-revert-mode)
 ;;
-;;    (unless (package-install-p 'yasnippet)
-;;      (package-install 'yasnippet))
-;;    (with-eval-after-load 'yasnippet
-;;      (dolist (key (where-is-internal 'yas-expand yas-minor-mode-map))
-;;      (define-key yas-minor-mode-map key nil))
-;;      (define-key yas-minor-mode-map "<backtab>" #'yas-expand)
-;;    (customize-set-variable 'yas-prompt-functions '(yas-completing-prompt))
-;;    (customize-set-variable 'yas-wrap-around-region t))
-;;    (add-hook 'prog-mode-hook #'yas-minor-mode)
-
+;;    (unless (package-install-p 'paredit)
+;;      (package-install 'paredit))
+;;    (setq minor-mode-alist
+;;          (delq (assq 'paredit-mode minor-mode-alist)
+;;                minor-mode-alist))
+;;    (add-hook 'scheme-mode-hook #'paredit-mode)
+;;    (add-hook 'lisp-mode-hook #'paredit-mode)
 
 ;; Additional "keywords" can be defined using `setup-define'.  All
 ;; known keywords are documented in the docstring for `setup'.
@@ -83,19 +79,21 @@ Do not modify this variable by hand.  Instead use
   "Return a docstring for `setup'."
   (with-temp-buffer
     (insert (documentation (symbol-function 'setup) 'raw)
-            "\n\n"
-            "Within BODY, `setup' provides these local macros:")
-    (dolist (sym (sort (mapcar #'car setup-macros) #'string-lessp))
-      (newline 2)
-      (let ((sig (mapcar
-                  (lambda (arg)
-                    (if (string-match "\\`&" (symbol-name arg))
-                        arg
-                      (intern (upcase (symbol-name arg)))))
-                  (get sym 'setup-signature))))
-        (insert (format " - %s\n\n" (cons sym sig))
-                (or (get sym 'setup-documentation)
-                    "No documentation."))))
+            "\n\n")
+    (if (null setup-macros)
+        (insert "No local macros are defined.")
+      (insert "Within BODY, `setup' provides these local macros:")
+      (dolist (sym (sort (mapcar #'car setup-macros) #'string-lessp))
+        (newline 2)
+        (let ((sig (mapcar
+                    (lambda (arg)
+                      (if (string-match "\\`&" (symbol-name arg))
+                          arg
+                        (intern (upcase (symbol-name arg)))))
+                    (get sym 'setup-signature))))
+          (insert (format " - %s\n\n" (cons sym sig))
+                  (or (get sym 'setup-documentation)
+                      "No documentation.")))))
     (buffer-string)))
 
 ;;;###autoload
@@ -106,6 +104,8 @@ will otherwise just be evaluated as is.
 NAME may also be a macro, if it can provide a symbol."
   (declare (debug (&rest &or [symbolp sexp] form))
            (indent defun))
+  (unless lexical-binding
+    (error "The `setup' macro requires lexical binding"))
   (when (consp name)
     (push name body)
     (let ((shorthand (get (car name) 'setup-shorthand)))
@@ -212,7 +212,9 @@ If not given, it is assumed nothing is evaluated."
                           (intern (format "%s-mode" feature)))
              ,@body))
       `(progn ,@body)))
-  :documentation "Change the FEATURE that BODY is configuring."
+  :documentation "Change the FEATURE that BODY is configuring.
+This macro also declares a current mode by appending \"-mode\" to
+FEATURE, unless it already ends with \"-mode\"."
   :debug '(sexp setup)
   :indent 1)
 
@@ -267,7 +269,7 @@ the first FEATURE."
     `(global-set-key
       ,(cond ((stringp key) (kbd key))
              ((symbolp key) `(kbd ,key))
-             (key))
+             (t key))
       #',command))
   :documentation "Globally bind KEY to COMMAND."
   :debug '(form sexp)
@@ -276,9 +278,9 @@ the first FEATURE."
 (setup-define :bind
   (lambda (key command)
     `(define-key (symbol-value setup-map)
-       ,(if (or (symbolp key) (stringp key))
-            `(kbd ,key)
-          key)
+       ,(cond ((stringp key) (kbd key))
+              ((symbolp key) `(kbd ,key))
+              (t key))
        #',command))
   :documentation "Bind KEY to COMMAND in current map."
   :after-loaded t
@@ -288,9 +290,9 @@ the first FEATURE."
 (setup-define :unbind
   (lambda (key)
     `(define-key (symbol-value setup-map)
-       ,(if (or (symbolp key) (stringp key))
-              `(kbd ,key)
-          key)
+       ,(cond ((stringp key) (kbd key))
+              ((symbolp key) `(kbd ,key))
+              (t key))
        nil))
   :documentation "Unbind KEY in current map."
   :after-loaded t
@@ -303,9 +305,9 @@ the first FEATURE."
        (dolist (key (where-is-internal ',command (symbol-value setup-map)))
          (define-key (symbol-value setup-map) key nil))
        (define-key (symbol-value setup-map)
-         ,(if (or (symbolp key) (stringp key))
-              `(kbd ,key)
-            key)
+         ,(cond ((stringp key) (kbd key))
+                ((symbolp key) `(kbd ,key))
+                (t key))
          #',command)))
   :documentation "Unbind the current key for COMMAND, and bind it to KEY."
   :after-loaded t
@@ -320,7 +322,10 @@ the first FEATURE."
 
 (setup-define :hook-into
   (lambda (mode)
-    `(add-hook ',(intern (concat (symbol-name mode) "-hook"))
+    `(add-hook ',(let ((name (symbol-name mode)))
+                   (if (string-match-p "-hook\\'" name)
+                       mode
+                     (intern (concat name "-hook"))))
                setup-mode))
   :documentation "Add current mode to HOOK."
   :repeatable t)
@@ -330,30 +335,55 @@ the first FEATURE."
     (cond ((symbolp name) t)
           ((eq (car-safe name) 'append)
            (setq name (cadr name)
-                 val `(append (funcall (or (get ',name 'custom-get)
-                                           #'symbol-value)
-                                       ',name)
-                              (list ,val))))
+                 val (let ((sym (gensym)))
+                       `(let ((,sym ,val)
+                              (list (funcall (or (get ',name 'custom-get)
+                                                 #'symbol-value)
+                                             ',name)))
+                          (if (member ,sym list)
+                              list
+                            (append list (list ,sym)))))))
           ((eq (car-safe name) 'prepend)
            (setq name (cadr name)
-                 val `(cons ,val
-                            (funcall (or (get ',name 'custom-get)
-                                         #'symbol-value)
-                                     ',name))))
+                 val (let ((sym (gensym)))
+                       `(let ((,sym ,val)
+                              (list (funcall (or (get ',name 'custom-get)
+                                                 #'symbol-value)
+                                             ',name)))
+                          (if (member ,sym list)
+                              list
+                            (cons ,sym list))))))
           ((eq (car-safe name) 'remove)
            (setq name (cadr name)
-                 val `(remove ,val
-                              (funcall (or (get ',name 'custom-get)
-                                           #'symbol-value)
-                                       ',name))))
+                 val `(remove ,name (funcall (or (get ',name 'custom-get)
+                                                 #'symbol-value)
+                                             ',name))))
           ((error "Invalid option %S" name)))
-    `(customize-set-variable ',name ,val "Modified by `setup'"))
+    `(progn
+       (custom-load-symbol ',name)
+       (funcall (or (get ',name 'custom-set) #'set-default)
+                ',name ,val)
+       (put ',name 'variable-comment "Modified by `setup'")))
   :documentation "Set the option NAME to VAL.
 NAME may be a symbol, or a cons-cell.  If NAME is a cons-cell, it
-will use the car value to modify the behaviour.  If NAME has the
-form (append VAR), VAL is appended to VAR.  If NAME has the
-form (prepend VAR), VAL is prepended to VAR.  If NAME has the
-form (remove VAR), VAL is removed from VAR."
+will use the car value to modify the behaviour.  These forms are
+supported:
+
+(append VAR)    Assuming VAR designates a list, add VAL as its last
+                element, unless it is already member of the list.
+
+(prepend VAR)   Assuming VAR designates a list, add VAL to the
+                beginning, unless it is already member of the
+                list.
+
+(remove VAR)    Assuming VAR designates a list, remove all instances
+                of VAL.
+
+Note that if the value of an option is modified partially by
+append, prepend, remove, one should ensure that the default value
+has been loaded. Also keep in mind that user options customized
+with this macro are not added to the \"user\" theme, and will
+therefore not be stored in `custom-set-variables' blocks."
   :debug '(sexp form)
   :repeatable t)
 
@@ -370,10 +400,18 @@ form (remove VAR), VAL is removed from VAR."
     (cond ((symbolp name) t)
           ((eq (car-safe name) 'append)
            (setq name (cadr name)
-                 val `(append ,name (list val))))
+                 val (let ((sym (gensym)))
+                       `(let ((,sym ,val) (list ,name))
+                          (if (member ,sym list)
+                              list
+                            (append list (list ,sym)))))))
           ((eq (car-safe name) 'prepend)
            (setq name (cadr name)
-                 val `(cons ,val ,name)))
+                 val (let ((sym (gensym)))
+                       `(let ((,sym ,val) (list ,name))
+                          (if (member ,sym list)
+                              list
+                            (cons ,sym list))))))
           ((eq (car-safe name) 'remove)
            (setq name (cadr name)
                  val `(remove ,val ,name)))
@@ -381,10 +419,18 @@ form (remove VAR), VAL is removed from VAR."
     `(add-hook setup-hook (lambda () (setq-local ,name ,val))))
   :documentation "Set the value of NAME to VAL in buffers of the current mode.
 NAME may be a symbol, or a cons-cell.  If NAME is a cons-cell, it
-will use the car value to modify the behaviour.  If NAME has the
-form (append VAR), VAL is appended to VAR.  If NAME has the
-form (prepend VAR), VAL is prepended to VAR.  If NAME has the
-form (remove VAR), VAL is removed from VAR."
+will use the car value to modify the behaviour. These forms are
+supported:
+
+(append VAR)    Assuming VAR designates a list, add VAL as its last
+                element, unless it is already member of the list.
+
+(prepend VAR)   Assuming VAR designates a list, add VAL to the
+                beginning, unless it is already member of the
+                list.
+
+(remove VAR)    Assuming VAR designates a list, remove all instances
+                of VAL."
   :debug '(sexp form)
   :repeatable t)
 
@@ -445,6 +491,21 @@ the first PACKAGE."
     `(unless ,condition
        (throw 'setup-exit nil)))
   :documentation "If CONDITION is non-nil, stop evaluating the body."
+  :debug '(form)
+  :repeatable t)
+
+(setup-define :load-from
+  (lambda (path)
+    `(add-to-list 'load-path (expand-file-name ,path)))
+  :documentation "Add PATH to load path.
+This macro can be used as HEAD, and it will replace itself with
+the nondirectory part of PATH."
+  :shorthand (lambda (args) (intern (file-name-nondirectory (cadr args)))))
+
+(setup-define :file-match
+  (lambda (pat)
+    `(add-to-list 'auto-mode-alist (cons ,pat setup-mode)))
+  :documentation "Associate the current mode with files that match PAT."
   :debug '(form)
   :repeatable t)
 
