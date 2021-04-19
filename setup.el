@@ -4,7 +4,7 @@
 
 ;; Author: Philip K. <philipk@posteo.net>
 ;; Maintainer: Philip K. <philipk@posteo.net>
-;; Version: 0.1.2
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "26.1"))
 ;; Keywords: lisp, local
 ;; URL: https://git.sr.ht/~zge/setup
@@ -111,9 +111,11 @@ NAME may also be a macro, if it can provide a symbol."
     (let ((shorthand (get (car name) 'setup-shorthand)))
       (setq name (and shorthand (funcall shorthand name)))))
   (macroexpand-all
-   `(catch 'setup-exit
-      (:with-feature ,name ,@body)
-      t)
+   (if (assq :with-feature setup-macros)
+       `(catch 'setup-exit
+          (:with-feature ,name ,@body)
+          t)
+     `(catch 'setup-exit ,(macroexp-progn body) t))
    (append setup-macros macroexpand-all-environment)))
 
 ;;;###autoload
@@ -183,7 +185,7 @@ If not given, it is assumed nothing is evaluated."
                              (setf (nthcdr arity args) nil)
                              (push (apply fn args) aggr)
                              (setq args rest)))
-                         `(progn ,@(nreverse aggr)))))))
+                         (macroexp-progn (nreverse aggr)))))))
           (if (plist-get opts :after-loaded)
               (lambda (&rest args)
                 `(with-eval-after-load setup-name ,(apply fn args)))
@@ -211,7 +213,7 @@ If not given, it is assumed nothing is evaluated."
                             feature
                           (intern (format "%s-mode" feature)))
              ,@body))
-      `(progn ,@body)))
+      (macroexp-progn body)))
   :documentation "Change the FEATURE that BODY is configuring.
 This macro also declares a current mode by appending \"-mode\" to
 FEATURE, unless it already ends with \"-mode\"."
@@ -510,7 +512,7 @@ the nondirectory part of PATH."
   :repeatable t)
 
 (setup-define :when-loaded
-  (lambda (&rest body) `(progn ,@body))
+  (lambda (&rest body) (macroexp-progn body))
   :documentation "Evaluate BODY after the current feature has been loaded.
 Avoid using this macro whenever possible, and
 instead choose a more specialized alternative or write one
