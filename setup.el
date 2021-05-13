@@ -24,7 +24,9 @@
 
 ;;; Commentary:
 
-;; The `setup' macro simplifies repetitive configuration patterns.
+;; The `setup` macro simplifies repetitive configuration patterns, by
+;; providing context-sensitive local macros in `setup` bodies.
+;;
 ;; For example, these macros:
 
 ;;    (setup shell
@@ -68,6 +70,8 @@
 ;; known keywords are documented in the docstring for `setup'.
 
 ;;; Code:
+
+(require 'elisp-mode)
 
 (defvar setup-macros nil
   "Local macro definitions to be bound in `setup' bodies.
@@ -125,10 +129,6 @@ NAME may also be a macro, if it can provide a symbol."
   "Define `setup'-local macro NAME using function FN.
 The plist OPTS may contain the key-value pairs:
 
-  :name NAME
-Specify a function to use, for extracting the feature name of a
-NAME entry, if it is the first element in a setup macro.
-
   :indent SPEC
 Change indentation behaviour.  See symbol `lisp-indent-function'.
 
@@ -169,6 +169,7 @@ If not given, it is assumed nothing is evaluated."
            (append (help-function-arglist fn 'preserve-names)
                    (if (plist-get opts :repeatable) '(...)))))
   (put name 'setup-shorthand (plist-get opts :shorthand))
+  (put name 'setup-definition-file (or load-file-name buffer-file-name))
   (put name 'lisp-indent-function (plist-get opts :indent))
   ;; define macro for `macroexpand-all'
   (setf (alist-get name setup-macros)   ;New in Emacs-25.
@@ -200,6 +201,15 @@ If not given, it is assumed nothing is evaluated."
                 ((plist-get opts :repeatable)
                  (cons '&rest spec))
                 (t spec)))))
+
+(defun setup-xref-def-function (symbol)
+  "Return an elisp xref location for SYMBOL."
+  (and (assq symbol setup-macros)
+       (let ((file (get symbol 'setup-definition-file)))
+         (list (elisp--xref-make-xref nil symbol file)))))
+
+(add-to-list 'elisp-xref-find-def-functions
+             #'setup-xref-def-function)
 
 
 ;;; definitions of `setup' keywords
@@ -498,10 +508,13 @@ the first PACKAGE."
 
 (setup-define :load-from
   (lambda (path)
-    `(add-to-list 'load-path (expand-file-name ,path)))
+    `(if (file-exists-p ,path)
+         (add-to-list 'load-path (expand-file-name ,path))
+       (throw 'setup-exit t)))
   :documentation "Add PATH to load path.
 This macro can be used as HEAD, and it will replace itself with
-the nondirectory part of PATH."
+the nondirectory part of PATH.
+If PATH does not exist, abort the evaluation."
   :shorthand (lambda (args) (intern (file-name-nondirectory (cadr args)))))
 
 (setup-define :file-match
