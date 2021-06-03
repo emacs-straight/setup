@@ -269,8 +269,9 @@ the first PACKAGE."
 
 (setup-define :require
   (lambda (feature)
-    `(require ',feature))
-  :documentation "Eagerly require FEATURE.
+    `(unless (require ',feature nil t)
+       (throw 'setup-exit nil)))
+  :documentation "Try to require FEATURE, or stop evaluating body.
 This macro can be used as HEAD, and it will replace itself with
 the first FEATURE."
   :repeatable t
@@ -498,6 +499,12 @@ the first PACKAGE."
   :repeatable t
   :shorthand #'cadr)
 
+(setup-define :if-host
+  (lambda (hostname)
+    `(unless (string= (system-name) ,hostname)
+       (throw 'setup-exit nil)))
+  :documentation "If HOSTNAME is not the current hostname, stop evaluating form.")
+
 (setup-define :only-if
   (lambda (condition)
     `(unless ,condition
@@ -515,7 +522,9 @@ the first PACKAGE."
 This macro can be used as HEAD, and it will replace itself with
 the nondirectory part of PATH.
 If PATH does not exist, abort the evaluation."
-  :shorthand (lambda (args) (intern (file-name-nondirectory (cadr args)))))
+  :shorthand (lambda (args) (intern
+                             (file-name-nondirectory
+                              (directory-file-name (cadr args))))))
 
 (setup-define :file-match
   (lambda (pat)
