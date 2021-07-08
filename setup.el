@@ -7,7 +7,7 @@
 ;; Version: 0.2.1
 ;; Package-Requires: ((emacs "26.1"))
 ;; Keywords: lisp, local
-;; URL: https://git.sr.ht/~zge/setup
+;; URL: https://git.sr.ht/~pkal/setup
 
 ;; This package is Free Software: you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -305,7 +305,13 @@ the first FEATURE."
       ,(cond ((stringp key) (kbd key))
              ((symbolp key) `(kbd ,key))
              (t key))
-      #',command))
+      ,(cond ((eq (car-safe command) 'function)
+              command)
+             ((eq (car-safe command) 'quote)
+              `#',(cadr command))
+             ((symbolp 'quote)
+              `#',command)
+             (command))))
   :documentation "Globally bind KEY to COMMAND."
   :debug '(form sexp)
   :repeatable t)
@@ -316,7 +322,13 @@ the first FEATURE."
        ,(cond ((stringp key) (kbd key))
               ((symbolp key) `(kbd ,key))
               (t key))
-       #',command))
+       ,(cond ((eq (car-safe command) 'function)
+                 command)
+                ((eq (car-safe command) 'quote)
+                 `#',(cadr command))
+                ((symbolp 'quote)
+                 `#',command)
+                (command))))
   :documentation "Bind KEY to COMMAND in current map."
   :after-loaded t
   :debug '(form sexp)
@@ -343,7 +355,13 @@ the first FEATURE."
          ,(cond ((stringp key) (kbd key))
                 ((symbolp key) `(kbd ,key))
                 (t key))
-         #',command)))
+         ,(cond ((eq (car-safe command) 'function)
+                 command)
+                ((eq (car-safe command) 'quote)
+                 `#',(cadr command))
+                ((symbolp 'quote)
+                 `#',command)
+                (command)))))
   :documentation "Unbind the current key for COMMAND, and bind it to KEY."
   :after-loaded t
   :debug '(form sexp)
@@ -397,8 +415,7 @@ the first FEATURE."
     `(progn
        (custom-load-symbol ',name)
        (funcall (or (get ',name 'custom-set) #'set-default)
-                ',name ,val)
-       (put ',name 'variable-comment "Modified by `setup'")))
+                ',name ,val)))
   :documentation "Set the option NAME to VAL.
 NAME may be a symbol, or a cons-cell.  If NAME is a cons-cell, it
 will use the car value to modify the behaviour.  These forms are
