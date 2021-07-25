@@ -228,8 +228,6 @@ If not given, it is assumed nothing is evaluated."
 
 (defun setup-get (opt)
   "Return value for OPT."
-  (when (eq opt 'quit)
-    (setq setup--need-quit t))
   (or (cdr (assq opt setup-opts))
       (error "Cannot deduce %S from context" opt)))
 
@@ -240,13 +238,19 @@ This must be used in context-setting macros (`:with-feature',
 settings."
   (macroexpand-all (macroexp-progn body) setup-macros))
 
-(defun setup--ensure-kbd (sexp)
+(defun setup-quit (&optional return)
+  "Generate code to quit evaluation.
+If RETURN is given, throw that value."
+  (setq setup--need-quit t)
+  `(throw ',(setup-get 'quit) ,return))
+
+(defun setup-ensure-kbd (sexp)
   "Attempt to return SEXP as a key binding expression."
   (cond ((stringp sexp) (kbd sexp))
         ((symbolp sexp) `(kbd ,sexp))
         (sexp)))
 
-(defun setup--ensure-function (sexp)
+(defun setup-ensure-function (sexp)
   "Attempt to return SEXP as a quoted function name."
   (cond ((eq (car-safe sexp) 'function)
          sexp)
@@ -256,7 +260,7 @@ settings."
          `#',sexp)
         (sexp)))
 
-(defun setup--make-setter (name val old-val-fn wrap-fn)
+(defun setup-make-setter (name val old-val-fn wrap-fn)
   "Convert NAME and VAL into setter code.
 The function OLD-VAL-FN is used to extract the old value of
 VAL.  The function WRAP-FN combines the transformed values of NAME
@@ -299,7 +303,7 @@ and VAL into one s-expression."
                                  (intern (format "%s-mode" feature))))
                          (setup-opts `((feature . ,feature)
                                        (mode . ,mode)
-                                       (hook . ,(intern (format "%s-mode" mode)))
+                                       (hook . ,(intern (format "%s-hook" mode)))
                                        (map . ,(intern (format "%s-map" mode)))
                                        ,@setup-opts)))
                     (setup-expand body))
@@ -318,7 +322,7 @@ If FEATURE is a list, apply BODY to all elements of FEATURE."
     (let (bodies)
       (dolist (mode (if (listp modes) modes (list modes)))
         (push (let ((setup-opts `((mode . ,mode)
-                                  (hook . ,(intern (format "%s-mode" mode)))
+                                  (hook . ,(intern (format "%s-hook" mode)))
                                   (map . ,(intern (format "%s-map" mode)))
                                   ,@setup-opts)))
                 (setup-expand body))
@@ -370,7 +374,7 @@ the first PACKAGE."
 (setup-define :require
   (lambda (feature)
     `(unless (require ',feature nil t)
-       (throw ',(setup-get 'quit) nil)))
+       ,(setup-quit)))
   :documentation "Try to require FEATURE, or stop evaluating body.
 This macro can be used as HEAD, and it will replace itself with
 the first FEATURE."
@@ -380,8 +384,8 @@ the first FEATURE."
 (setup-define :global
   (lambda (key command)
     `(global-set-key
-      ,(setup--ensure-kbd key)
-      ,(setup--ensure-function command)))
+      ,(setup-ensure-kbd key)
+      ,(setup-ensure-function command)))
   :documentation "Globally bind KEY to COMMAND."
   :debug '(form sexp)
   :repeatable t)
@@ -389,8 +393,8 @@ the first FEATURE."
 (setup-define :bind
   (lambda (key command)
     `(define-key ,(setup-get 'map)
-       ,(setup--ensure-kbd key)
-       ,(setup--ensure-function command)))
+       ,(setup-ensure-kbd key)
+       ,(setup-ensure-function command)))
   :documentation "Bind KEY to COMMAND in current map."
   :after-loaded t
   :debug '(form sexp)
@@ -399,7 +403,7 @@ the first FEATURE."
 (setup-define :unbind
   (lambda (key)
     `(define-key ,(setup-get 'map)
-       ,(setup--ensure-kbd key)
+       ,(setup-ensure-kbd key)
        nil))
   :documentation "Unbind KEY in current map."
   :after-loaded t
@@ -412,8 +416,8 @@ the first FEATURE."
        (dolist (key (where-is-internal ',command ,(setup-get 'map)))
          (define-key ,(setup-get 'map) key nil))
        (define-key ,(setup-get 'map)
-         ,(setup--ensure-kbd key)
-         ,(setup--ensure-function command))))
+         ,(setup-ensure-kbd key)
+         ,(setup-ensure-function command))))
   :documentation "Unbind the current key for COMMAND, and bind it to KEY."
   :after-loaded t
   :debug '(form sexp)
@@ -421,7 +425,7 @@ the first FEATURE."
 
 (setup-define :hook
   (lambda (function)
-    `(add-hook ',(setup-get 'hook) ,(setup--ensure-function function)))
+    `(add-hook ',(setup-get 'hook) ,(setup-ensure-function function)))
   :documentation "Add FUNCTION to current hook."
   :repeatable t)
 
@@ -431,13 +435,13 @@ the first FEATURE."
                    (if (string-match-p "-hook\\'" name)
                        mode
                      (intern (concat name "-hook"))))
-               ,(setup--ensure-function (setup-get 'mode))))
+               ,(setup-ensure-function (setup-get 'mode))))
   :documentation "Add current mode to HOOK."
   :repeatable t)
 
 (setup-define :option
   (lambda (name val)
-    (setup--make-setter
+    (setup-make-setter
      name val
      (lambda (name)
        `(funcall (or (get ',name 'custom-get)
@@ -481,7 +485,7 @@ therefore not be stored in `custom-set-variables' blocks."
 
 (setup-define :local-set
   (lambda (name val)
-    (setup--make-setter
+    (setup-make-setter
      name val
      (lambda (name)
        (if (consp name) (cadr name) name))
@@ -515,7 +519,7 @@ supported:
 
 (setup-define :advise
   (lambda (symbol where function)
-    `(advice-add ',symbol ,where ,(setup--ensure-function function)))
+    `(advice-add ',symbol ,where ,(setup-ensure-function function)))
   :documentation "Add a piece of advice on a function.
 See `advice-add' for more details."
   :after-loaded t
@@ -532,14 +536,14 @@ See `advice-add' for more details."
 (setup-define :needs
   (lambda (executable)
     `(unless (executable-find ,executable)
-       (throw ',(setup-get 'quit) nil)))
+       ,(setup-quit)))
   :documentation "If EXECUTABLE is not in the path, stop here."
   :repeatable 1)
 
 (setup-define :if-package
   (lambda (package)
     `(unless (package-installed-p ',package)
-       (throw ',(setup-get 'quit) nil)))
+       ,(setup-quit)))
   :documentation "If package is not installed, stop evaluating the body.
 This macro can be used as HEAD, and it will replace itself with
 the first PACKAGE."
@@ -549,7 +553,7 @@ the first PACKAGE."
 (setup-define :if-feature
   (lambda (feature)
     `(unless (featurep ',feature)
-       (throw ',(setup-get 'quit) nil)))
+       ,(setup-quit)))
   :documentation "If FEATURE is not available, stop evaluating the body.
 This macro can be used as HEAD, and it will replace itself with
 the first PACKAGE."
@@ -559,13 +563,13 @@ the first PACKAGE."
 (setup-define :if-host
   (lambda (hostname)
     `(unless (string= (system-name) ,hostname)
-       (throw ',(setup-get 'quit) nil)))
+       ,(setup-quit)))
   :documentation "If HOSTNAME is not the current hostname, stop evaluating form.")
 
 (setup-define :only-if
   (lambda (condition)
     `(unless ,condition
-       (throw ',(setup-get 'quit) nil)))
+       ,(setup-quit)))
   :documentation "If CONDITION is non-nil, stop evaluating the body."
   :debug '(form)
   :repeatable t)
@@ -574,7 +578,7 @@ the first PACKAGE."
   (lambda (path)
     `(if (file-exists-p ,path)
          (add-to-list 'load-path (expand-file-name ,path))
-       (throw ',(setup-get 'quit) nil)))
+       ,(setup-quit)))
   :documentation "Add PATH to load path.
 This macro can be used as HEAD, and it will replace itself with
 the nondirectory part of PATH.
