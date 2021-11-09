@@ -4,7 +4,7 @@
 
 ;; Author: Philip Kaludercic <philipk@posteo.net>
 ;; Maintainer: Philip Kaludercic <philipk@posteo.net>
-;; Version: 1.1.0
+;; Version: 1.2.0
 ;; Package-Requires: ((emacs "26.1"))
 ;; Keywords: lisp, local
 ;; URL: https://git.sr.ht/~pkal/setup
@@ -48,7 +48,8 @@
 ;; - Revert the indentation spec change for `setup-define'
 ;; - Add :bind-into macro
 ;; - Add :ensure key to `setup-define' to replace
-;;   setup-ensure-... functions
+;;   the deprecated setup-ensure-... functions
+;; - Add `setup-bind' macro to simplify context modification.
 ;;
 ;;;; Version 1.1.0:
 ;;
@@ -74,7 +75,7 @@ is used to retrieve the current context.")
 (defvar setup-attributes '()
   "A list symbols used to store a state during macro processing.
 The list is populated during macro expansion, and may modify the
-behaviour of the functions in `setup-modifier-list'..")
+behaviour of the functions in `setup-modifier-list'.")
 
 (defun setup-wrap-to-catch-quits (body _name)
   "Wrap BODY in a catch block if necessary.
@@ -297,6 +298,23 @@ This must be used in context-setting macros (`:with-feature',
 settings."
   (macroexpand-all (macroexp-progn body) setup-macros))
 
+(defmacro setup-bind (body &rest vars)
+  "Add VARS to `setup-opts' in BODY.
+Each entry in VARS is a list of the form (VAR VAL), comparable to
+`let'.  This macro makes sure that the BODY is expanded correctly
+so that it can make use of the new bindings in VARS."
+  (declare (debug let) (indent 1))
+  ;; The macro modifies VARS in place, inserting unquotes in the right
+  ;; places to convert a `let'-formed list into a alist.  The unquoted
+  ;; values are then handled by the backquote inserted by the macro.
+  ;; The list this generates is destructively concatenated to the
+  ;; beginning of setup-ops, which is safe because backquoting expands
+  ;; to a new list allocation.
+  (dolist (var vars)
+    (setcdr var (list '\, (cadr var))))
+  `(let ((setup-opts (nconc ,(list '\` vars) setup-opts)))
+     (setup-expand ,body)))
+
 (defun setup-quit (&optional return)
   "Generate code to quit evaluation.
 If RETURN is given, throw that value."
@@ -342,19 +360,18 @@ VAL into one s-expression."
     (let (bodies)
       (dolist (feature (if (listp features) features (list features)))
         (push (if feature
-                  (let* ((mode (if (string-match-p "-mode\\'" (symbol-name feature))
-                                   feature
-                                 (intern (format "%s-mode" feature))))
-                         (setup-opts `((feature . ,feature)
-                                       (mode . ,(or (get features 'setup-mode) mode))
-                                       (hook . ,(or (get features 'setup-hook)
-                                                    (get mode 'setup-hook)
-                                                    (intern (format "%s-hook" mode))))
-                                       (map . ,(or (get features 'setup-map)
-                                                   (get mode 'setup-map)
-                                                   (intern (format "%s-map" mode))))
-                                       ,@setup-opts)))
-                    (setup-expand body))
+                  (let ((mode (if (string-match-p "-mode\\'" (symbol-name feature))
+                                  feature
+                                (intern (format "%s-mode" feature)))))
+                    (setup-bind body
+                      (feature feature)
+                      (mode (or (get features 'setup-mode) mode))
+                      (hook (or (get features 'setup-hook)
+                                (get mode 'setup-hook)
+                                (intern (format "%s-hook" mode))))
+                      (map (or (get features 'setup-map)
+                               (get mode 'setup-map)
+                               (intern (format "%s-map" mode))))))
                 body)
               bodies))
       (macroexp-progn (if features (nreverse bodies) body))))
@@ -369,13 +386,12 @@ If FEATURE is a list, apply BODY to all elements of FEATURE."
   (lambda (modes &rest body)
     (let (bodies)
       (dolist (mode (if (listp modes) modes (list modes)))
-        (push (let ((setup-opts `((mode . ,mode)
-                                  (hook . ,(or (get mode 'setup-hook)
-                                               (intern (format "%s-hook" mode))))
-                                  (map . ,(or (get mode 'setup-map)
-                                              (intern (format "%s-map" mode))))
-                                  ,@setup-opts)))
-                (setup-expand body))
+        (push (setup-bind body
+                (mode mode)
+                (hook (or (get mode 'setup-hook)
+                          (intern (format "%s-hook" mode))))
+                (map (or (get mode 'setup-map)
+                         (intern (format "%s-map" mode)))))
               bodies))
       (macroexp-progn (nreverse bodies))))
   :documentation "Change the MODE that BODY is configuring.
@@ -387,8 +403,7 @@ If MODE is a list, apply BODY to all elements of MODE."
   (lambda (maps &rest body)
     (let (bodies)
       (dolist (map (if (listp maps) maps (list maps)))
-        (push (let ((setup-opts (cons `(map . ,map) setup-opts)))
-                (setup-expand body))
+        (push (setup-bind body (map map))
               bodies))
       (macroexp-progn (nreverse bodies))))
   :documentation "Change the MAP that BODY will bind to.
@@ -400,8 +415,7 @@ If MAP is a list, apply BODY to all elements of MAP."
   (lambda (hooks &rest body)
     (let (bodies)
       (dolist (hook (if (listp hooks) hooks (list hooks)))
-        (push (let ((setup-opts (cons `(hook . ,hook) setup-opts)))
-                (setup-expand body))
+        (push (setup-bind body (hook hook))
               bodies))
       (macroexp-progn (nreverse bodies))))
   :documentation "Change the HOOK that BODY will use.
@@ -614,6 +628,27 @@ yourself."
   :debug '(setup)
   :after-loaded t
   :indent 0)
+
+
+;;; Obsoleted code
+
+(defun setup-ensure-kbd (sexp)
+  "Attempt to return SEXP as a key binding expression."
+  (cond ((stringp sexp) (kbd sexp))
+        ((symbolp sexp) `(kbd ,sexp))
+        (sexp)))
+(make-obsolete 'setup-ensure-kbd "Use :ensure keyword instead" "1.2.0")
+
+(defun setup-ensure-function (sexp)
+  "Attempt to return SEXP as a quoted function name."
+  (cond ((eq (car-safe sexp) 'function)
+         sexp)
+        ((eq (car-safe sexp) 'quote)
+         `#',(cadr sexp))
+        ((symbolp sexp)
+         `#',sexp)
+        (sexp)))
+(make-obsolete 'setup-ensure-function "Use :ensure keyword instead" "1.2.0")
 
 (provide 'setup)
 
