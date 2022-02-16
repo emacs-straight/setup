@@ -3,7 +3,7 @@
 ;; Copyright (C) 2021  Free Software Foundation, Inc.
 
 ;; Author: Philip Kaludercic <philipk@posteo.net>
-;; Maintainer: Philip Kaludercic <philipk@posteo.net>
+;; Maintainer: Philip Kaludercic <~pkal/public-inbox@lists.sr.ht>
 ;; Version: 1.2.0
 ;; Package-Requires: ((emacs "26.1"))
 ;; Keywords: lisp, local
@@ -281,6 +281,17 @@ functions `func'.  Any other value is invalid."
 (add-to-list 'elisp-xref-find-def-functions
              #'setup--xref-def-function)
 
+(defun setup--describe-macro (symbol)
+  ""
+  (when (assq symbol setup-macros)
+    (let ((start (point)))
+      (insert (or (get symbol 'setup-documentation)
+                  "No documentation."))
+      (fill-region start (point)))))
+
+(add-hook 'help-fns-describe-function-functions
+          #'setup--describe-macro)
+
 
 ;;; Common utility functions for local macros
 
@@ -430,8 +441,7 @@ If HOOK is a list, apply BODY to all elements of HOOK."
          (package-refresh-contents))
        (package-install ',package)))
   :documentation "Install PACKAGE if it hasn't been installed yet.
-This macro can be used as NAME, and it will replace itself with
-the first PACKAGE."
+The first PACKAGE can be used to deduce the feature context."
   :repeatable t
   :shorthand #'cadr)
 
@@ -440,8 +450,7 @@ the first PACKAGE."
     `(unless (require ',feature nil t)
        ,(setup-quit)))
   :documentation "Try to require FEATURE, or stop evaluating body.
-This macro can be used as NAME, and it will replace itself with
-the first FEATURE."
+The first FEATURE can be used to deduce the feature context."
   :repeatable t
   :shorthand #'cadr)
 
@@ -590,8 +599,7 @@ supported:
     `(unless (package-installed-p ',package)
        ,(setup-quit)))
   :documentation "If package is not installed, stop evaluating the body.
-This macro can be used as NAME, and it will replace itself with
-the first PACKAGE."
+The first PACKAGE can be used to deduce the feature context."
   :repeatable t
   :shorthand #'cadr)
 
@@ -600,8 +608,7 @@ the first PACKAGE."
     `(unless (featurep ',feature)
        ,(setup-quit)))
   :documentation "If FEATURE is not available, stop evaluating the body.
-This macro can be used as NAME, and it will replace itself with
-the first PACKAGE."
+The first FEATURE can be used to deduce the feature context."
   :repeatable t
   :shorthand #'cadr)
 
@@ -630,6 +637,22 @@ yourself."
   :debug '(setup)
   :after-loaded t
   :indent 0)
+
+(setup-define :and
+  (lambda (&rest conds)
+    `(if (and ,@(butlast conds))
+         ,@(last conds)
+       ,(setup-quit)))
+  :documentation "Abort evaluation of CONDS are not all true.
+The expression of the last condition is used to deduce the
+feature context."
+  :shorthand
+  (lambda (head)
+    (unless (cdr head)
+      (error ":and requires at least one condition"))
+    (let ((shorthand (get (caar (last head)) 'setup-shorthand)))
+      (and shorthand (funcall shorthand (car (last head))))))
+  :debug '(setup))
 
 
 ;;; Obsoleted code
