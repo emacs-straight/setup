@@ -1,6 +1,6 @@
 ;;; setup.el --- Helpful Configuration Macro    -*- lexical-binding: t -*-
 
-;; Copyright (C) 2021  Free Software Foundation, Inc.
+;; Copyright (C) 2021, 2022  Free Software Foundation, Inc.
 
 ;; Author: Philip Kaludercic <philipk@posteo.net>
 ;; Maintainer: Philip Kaludercic <~pkal/public-inbox@lists.sr.ht>
@@ -154,7 +154,7 @@ NAME may also be a macro, if it can provide a symbol."
                 (if (assq :with-feature setup-macros)
                     `(:with-feature ,name ,@body)
                   (macroexp-progn body))
-                setup-macros))
+                (append setup-macros macroexpand-all-environment)))
     (dolist (mod-fn setup-modifier-list)
       (setq body (funcall mod-fn body name)))
     body))
@@ -281,17 +281,6 @@ functions `func'.  Any other value is invalid."
 (add-to-list 'elisp-xref-find-def-functions
              #'setup--xref-def-function)
 
-(defun setup--describe-macro (symbol)
-  ""
-  (when (assq symbol setup-macros)
-    (let ((start (point)))
-      (insert (or (get symbol 'setup-documentation)
-                  "No documentation."))
-      (fill-region start (point)))))
-
-(add-hook 'help-fns-describe-function-functions
-          #'setup--describe-macro)
-
 
 ;;; Common utility functions for local macros
 
@@ -387,10 +376,13 @@ VAL into one s-expression."
               bodies))
       (macroexp-progn (if features (nreverse bodies) body))))
   :documentation "Change the FEATURE that BODY is configuring.
-This macro also declares a current mode by appending \"-mode\" to
-FEATURE, unless it already ends with \"-mode\".
+This macro also:
+- Declares a current mode by appending \"-mode\" to
+  FEATURE, unless it already ends with \"-mode\"
+- Declares a current hook by appending \"-hook\" to the mode
+- Declares a current map by appending \"-map\" to the mode
 If FEATURE is a list, apply BODY to all elements of FEATURE."
-  :debug '(sexp setup)
+  :debug '([&or ([&rest sexp]) sexp] setup)
   :indent 1)
 
 (setup-define :with-mode
@@ -406,8 +398,11 @@ If FEATURE is a list, apply BODY to all elements of FEATURE."
               bodies))
       (macroexp-progn (nreverse bodies))))
   :documentation "Change the MODE that BODY is configuring.
-If MODE is a list, apply BODY to all elements of MODE."
-  :debug '(sexp setup)
+If MODE is a list, apply BODY to all elements of MODE.
+This macro also:
+- Declares a current hook by appending \"-hook\" to the mode
+- Declares a current map by appending \"-map\" to the mode"
+  :debug '([&or ([&rest sexp]) sexp] setup)
   :indent 1)
 
 (setup-define :with-map
@@ -419,7 +414,7 @@ If MODE is a list, apply BODY to all elements of MODE."
       (macroexp-progn (nreverse bodies))))
   :documentation "Change the MAP that BODY will bind to.
 If MAP is a list, apply BODY to all elements of MAP."
-  :debug '(sexp setup)
+  :debug '([&or ([&rest sexp]) sexp] setup)
   :indent 1)
 
 (setup-define :with-hook
@@ -431,7 +426,7 @@ If MAP is a list, apply BODY to all elements of MAP."
       (macroexp-progn (nreverse bodies))))
   :documentation "Change the HOOK that BODY will use.
 If HOOK is a list, apply BODY to all elements of HOOK."
-  :debug '(sexp setup)
+  :debug '([&or ([&rest sexp]) sexp] setup)
   :indent 1)
 
 (setup-define :package
