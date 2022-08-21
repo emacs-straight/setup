@@ -129,7 +129,9 @@ Do not modify this variable by hand.  Instead use
               "that is immediately evaluated.")
       (fill-paragraph)
       (dolist (sym (sort (mapcar #'car setup-macros) #'string-lessp))
-        (newline 2)
+        (if (fboundp 'make-separator-line)
+            (insert "\n" (make-separator-line) "\n")
+          (newline 2))
         (let ((sig (mapcar
                     (lambda (arg)
                       (if (string-match "\\`&" (symbol-name arg))
@@ -675,27 +677,6 @@ feature context."
     (let ((shorthand (get (caar (last head)) 'setup-shorthand)))
       (and shorthand (funcall shorthand (car (last head))))))
   :debug '(setup))
-
-
-;;; Obsoleted code
-
-(defun setup-ensure-kbd (sexp)
-  "Attempt to return SEXP as a key binding expression."
-  (cond ((stringp sexp) (kbd sexp))
-        ((symbolp sexp) `(kbd ,sexp))
-        (sexp)))
-(make-obsolete 'setup-ensure-kbd "Use :ensure keyword instead" "1.2.0")
-
-(defun setup-ensure-function (sexp)
-  "Attempt to return SEXP as a quoted function name."
-  (cond ((eq (car-safe sexp) 'function)
-         sexp)
-        ((eq (car-safe sexp) 'quote)
-         `#',(cadr sexp))
-        ((symbolp sexp)
-         `#',sexp)
-        (sexp)))
-(make-obsolete 'setup-ensure-function "Use :ensure keyword instead" "1.2.0")
 
 (provide 'setup)
 
