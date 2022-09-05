@@ -674,8 +674,12 @@ feature context."
   (lambda (head)
     (unless (cdr head)
       (error ":and requires at least one condition"))
-    (let ((shorthand (get (caar (last head)) 'setup-shorthand)))
-      (and shorthand (funcall shorthand (car (last head))))))
+    (let ((tail (car (last head))))
+      (cond
+       ((symbolp tail) tail)
+       ((consp tail)
+        (let ((shorthand (get (car tail) 'setup-shorthand)))
+          (and shorthand (funcall shorthand tail)))))))
   :debug '(setup))
 
 (provide 'setup)
