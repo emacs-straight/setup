@@ -4,7 +4,7 @@
 
 ;; Author: Philip Kaludercic <philipk@posteo.net>
 ;; Maintainer: Philip Kaludercic <~pkal/public-inbox@lists.sr.ht>
-;; Version: 1.3.0
+;; Version: 1.3.2
 ;; Package-Requires: ((emacs "26.1"))
 ;; Keywords: lisp, local
 ;; URL: https://git.sr.ht/~pkal/setup
@@ -37,36 +37,9 @@
 
 ;;; News:
 
-;;;; Version 1.3.0
+;;;; Version 1.3.2 (bug fix release)
 
-;; - Add new `:and' macro.
-;; - Add new `:with-function' macro and have `:hook-into' use
-;;   the context function instead of the context mode (Earl Hyatt)
-;; - Improve `:bind-into' handling of maps.
-
-;;;; Version 1.2.0
-
-;; - Remove `setup-wrap-to-demote-errors' from `setup-modifier-list'
-;; - Pull `setup-expand-local-macros'  back into `setup'
-;; - Let `:with-feature' and `:with-mode' check symbol properties to
-;;   improve context-setting guesses.
-;; - Move macros :hide-mode, :advise, :needs, :if-host and :load-from
-;;   to EmacsWiki.
-;; - Revert the indentation spec change for `setup-define'
-;; - Add :bind-into macro
-;; - Add :ensure key to `setup-define' to replace
-;;   the deprecated setup-ensure-... functions
-;; - Add `setup-bind' macro to simplify context modification.
-
-;;;; Version 1.1.0:
-
-;; - Fix quoting error in :file-match definition
-;; - Remove unnecessary check for lexical binding
-;; - Change `setup-define' indentation
-;; - Handle multiple expressions in :when-loaded
-;; - Improvements to setup docstring
-;; - Wrap `setup' forms with `with-demoted-errors'
-;; - Allow `setup' to be extended using `setup-modifier-list'
+;; - Fix `:and' once again.
 
 ;;; Code:
 
@@ -313,15 +286,15 @@ Each entry in VARS is a list of the form (VAR VAL), comparable to
 `let'.  This macro makes sure that the BODY is expanded correctly
 so that it can make use of the new bindings in VARS."
   (declare (debug let) (indent 1))
-  ;; The macro modifies VARS in place, inserting unquotes in the right
-  ;; places to convert a `let'-formed list into a alist.  The unquoted
-  ;; values are then handled by the backquote inserted by the macro.
-  ;; The list this generates is destructively concatenated to the
-  ;; beginning of setup-ops, which is safe because backquoting expands
-  ;; to a new list allocation.
-  (dolist (var vars)
-    (setcdr var (list '\, (cadr var))))
-  `(let ((setup-opts (nconc ,(list '\` vars) setup-opts)))
+  `(let ((setup-opts (append
+                      (list
+                       ,@(mapcar
+                          (lambda (bind)
+                            (list 'cons
+                                  (list 'quote (car bind))
+                                  (cadr bind)))
+                          vars))
+                      setup-opts)))
      (setup-expand ,body)))
 
 (defun setup-quit (&optional return)
@@ -346,6 +319,18 @@ VAL into one s-expression."
                          (if (member ,sym list)
                              list
                            (append list (list ,sym)))))))
+          ((eq (car-safe name) 'append*)
+           (funcall wrap-fn
+                    (cadr name)
+                    (let ((sym (gensym))
+                          (i (gensym)))
+                      `(let ((list ,(funcall old-val-fn (cadr name)))
+                             (,sym nil))
+                         (dolist (,i ,val)
+                           (if (member ,i list)
+                               nil
+                             (push ,i ,sym)))
+                         (append list (nreverse ,sym))))))
           ((eq (car-safe name) 'prepend)
            (funcall wrap-fn
                     (cadr name)
@@ -355,10 +340,30 @@ VAL into one s-expression."
                          (if (member ,sym list)
                              list
                            (cons ,sym list))))))
+          ((eq (car-safe name) 'prepend*)
+           (funcall wrap-fn
+                    (cadr name)
+                    (let ((sym (gensym))
+                          (i (gensym)))
+                      `(let ((list ,(funcall old-val-fn (cadr name)))
+                             (,sym nil))
+                         (dolist (,i ,val)
+                           (if (member ,i list)
+                               nil
+                             (push ,i ,sym)))
+                         (append (nreverse ,sym) list)))))
           ((eq (car-safe name) 'remove)
            (funcall wrap-fn
                     (cadr name)
                     `(remove ,val ,(funcall old-val-fn (cadr name)))))
+          ((eq (car-safe name) 'remove*)
+           (funcall wrap-fn
+                    (cadr name)
+                    (let ((i (gensym)))
+                      `(let ((list ,(funcall old-val-fn (cadr name))))
+                         (dolist (,i ,val)
+                           (setq list (remove ,i list)))
+                         list))))
           ((error "Invalid option %S" name)))))
 
 
@@ -570,6 +575,17 @@ supported:
 (remove VAR)    Assuming VAR designates a list, remove all instances
                 of VAL.
 
+(append* VAR)  Assuming VAR designates a list, add each element
+               of VAL to the end of VAR, keeping their order,
+               unless it is already a member of the list.
+
+(prepend* VAR) Assuming VAR designates a list, add each element
+               of VAL to the start of VAR, keeping their order,
+               unless it is already a member of the list.
+
+(remove* VAR)  Assuming VAR designates a list, remove all
+               instances of each element of VAL.
+
 Note that if the value of an option is modified partially by
 append, prepend, remove, one should ensure that the default value
 has been loaded. Also keep in mind that user options customized
@@ -664,9 +680,13 @@ yourself."
 
 (setup-define :and
   (lambda (&rest conds)
-    `(if (and ,@(butlast conds))
-         ,@(last conds)
-       ,(setup-quit)))
+    (let ((tail (car (last conds))))
+      `(if (and ,@(butlast conds))
+           ,@(cond
+              ((symbolp tail) '(nil))
+              ((consp tail) (last conds))
+              ((error "Illegal tail")))
+         ,(setup-quit))))
   :documentation "Abort evaluation of CONDS are not all true.
 The expression of the last condition is used to deduce the
 feature context."
