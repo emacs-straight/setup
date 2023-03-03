@@ -1,6 +1,6 @@
 ;;; setup.el --- Helpful Configuration Macro    -*- lexical-binding: t -*-
 
-;; Copyright (C) 2021, 2022  Free Software Foundation, Inc.
+;; Copyright (C) 2021, 2022, 2023  Free Software Foundation, Inc.
 
 ;; Author: Philip Kaludercic <philipk@posteo.net>
 ;; Maintainer: Philip Kaludercic <~pkal/public-inbox@lists.sr.ht>
@@ -144,6 +144,67 @@ NAME may also be a macro, if it can provide a symbol."
 ;;;###autoload
 (put 'setup 'function-documentation '(setup--make-docstring))
 
+(defun setup--ensure (ensure-spec args &optional check-len)
+  "Ensure that ARGS matches the form of ENSURE-SPEC.
+
+The symbol `kbd' means to apply the function `kbd' to the
+argument.  The symbol `func' means to sharp-quote the argument.
+The symbol `&rest' means that the remaining elements of
+ENSURE-SPEC are applied repeatedly to the remaining elements of
+ARGS.
+
+When CHECK-LEN is non-nil, check that the lengths
+of ENSURE-SPEC and ARGS are compatible."
+  (when check-len
+    (let ((check ensure-spec)
+          (found nil)
+          (count 0))
+      (while check
+        (if (eq (car check) '&rest)
+            (if (zerop (mod (- (length args) count)
+                            (length (cdr check))))
+                (setq found t
+                      check nil)
+              (error "Bad `:ensure' spec or argument list"))
+          (setq check (cdr check)
+                count (1+ count))))
+      (unless (or found (= (length args) count))
+        (error "Bad `:ensure' spec or argument list"))))
+
+  (let ((result))
+    (while args
+      (let ((ensure (pop ensure-spec)))
+        (if (eq ensure '&rest)
+            (let* ((rest-spec ensure-spec)
+                   (rest-spec-len (length rest-spec)))
+              ;; Consume remaining `args'
+              (while args
+                (dolist (ensured
+                         (setup--ensure rest-spec
+                                        (let ((to-be-ensured))
+                                          (dotimes (_ rest-spec-len)
+                                            (push (pop args) to-be-ensured))
+                                          (nreverse to-be-ensured))
+                                        nil))
+                  (push ensured result))))
+          (let ((arg (pop args)))
+            (push (cond ((null ensure) arg) ;Do not modify argument
+                        ((eq ensure 'kbd) (cond
+                                           ((stringp arg) (kbd arg))
+                                           ((symbolp arg) `(kbd ,arg))
+                                           (arg)))
+                        ((eq ensure 'func) (cond
+                                            ((eq (car-safe arg) 'function)
+                                             arg)
+                                            ((eq (car-safe arg) 'quote)
+                                             `#',(cadr arg))
+                                            ((symbolp arg)
+                                             `#',arg)
+                                            (arg)))
+                        ((error "Invalid ensure spec %S" ensure)))
+                  result)))))
+    (nreverse result)))
+
 (defun setup-define (name fn &rest opts)
   "Define `setup'-local macro NAME using function FN.
 The plist OPTS may contain the key-value pairs:
@@ -157,6 +218,10 @@ Wrap the macro in a `with-eval-after-load' body.
   :repeatable ARITY
 Allow macro to be automatically repeated.  If ARITY is t, use
 `func-arity' to determine the minimal number of arguments.
+If ARITY is a dotted pair, then the car of ARITY is the number
+of shared arguments in the repeated function calls and the
+cdr is the number of arguments that make of the remainder
+of the function call.  The cdr may also be t, as above.
 
   :signature SIG
 Give an advertised calling convention.
@@ -179,7 +244,9 @@ If not given, it is assumed nothing is evaluated.
 A list of symbols indicating what kind of argument each parameter
 to FN is.  If the nth parameter is not to be reinterpreted, the
 nth symbol in SPEC should nil.  For key bindings `kbd' and for
-functions `func'.  Any other value is invalid."
+functions `func'.  `&rest' means that the remaining symbols apply
+to the remaining arguments repeatedly.  Any other value is
+invalid."
   (declare (indent 1))
   ;; NB.: NAME is not required to by a keyword, even though all macros
   ;;      specified on the next page use keywords.  The rationale for
@@ -200,41 +267,46 @@ functions `func'.  Any other value is invalid."
   (put name 'lisp-indent-function (plist-get opts :indent))
   ;; define macro for `macroexpand-all'
   (setf (alist-get name setup-macros)   ;New in Emacs-25.
-        (let* ((arity (if (eq (plist-get opts :repeatable) t)
-                          (car (func-arity fn))
-                        (plist-get opts :repeatable)))
-               (fn (if (null arity) fn
+        (let* ((possible-num-repeated (if (eq (plist-get opts :repeatable) t)
+                                          (car (func-arity fn))
+                                        (plist-get opts :repeatable)))
+               (fn (if (null possible-num-repeated)
+                       fn
                      (lambda (&rest args)
-                       (unless (zerop (mod (length args) arity))
-                         (error "Illegal arguments"))
-                       (let (aggr)
+                       (let ((aggr)
+                             (using-shared-args (consp possible-num-repeated))
+                             (num-shared)
+                             (shared-args)
+                             (num-repeated))
+
+                         (if using-shared-args
+                             (progn
+                               (setq num-shared (car possible-num-repeated)
+                                     num-repeated (if (eq (cdr possible-num-repeated) t)
+                                                      (- (car (func-arity fn))
+                                                         num-shared)
+                                                    (cdr possible-num-repeated))
+                                     shared-args args
+                                     args (nthcdr num-shared args))
+                               (setf (nthcdr num-shared shared-args) nil))
+                           (setq num-repeated possible-num-repeated))
+
+                         (unless (zerop (mod (length args) num-repeated))
+                           (error "Illegal arguments"))
+
                          (while args
-                           (let ((rest (nthcdr arity args)))
-                             (setf (nthcdr arity args) nil)
+                           (let ((rest (nthcdr num-repeated args)))
+                             (setf (nthcdr num-repeated args) nil)
                              (let ((ensure-spec (plist-get opts :ensure)))
-                               (when ensure-spec
-                                 (dotimes (i (length args))
-                                   (let ((ensure (nth i ensure-spec))
-                                         (arg (nth i args)))
-                                     (cond
-                                      ((null ensure)) ;Do not modify argument
-                                      ((eq ensure 'kbd)
-                                       (setf (nth i args)
-                                             (cond
-                                              ((stringp arg) (kbd arg))
-                                              ((symbolp arg) `(kbd ,arg))
-                                              (arg))))
-                                      ((eq ensure 'func)
-                                       (setf (nth i args)
-                                             (cond
-                                              ((eq (car-safe arg) 'function)
-                                               arg)
-                                              ((eq (car-safe arg) 'quote)
-                                               `#',(cadr arg))
-                                              ((symbolp arg)
-                                               `#',arg)
-                                              (arg))))
-                                      ((error "Invalid ensure spec %S" ensure)))))))
+                               (cond
+                                ((and using-shared-args ensure-spec)
+                                 (setq args (setup--ensure
+                                             ensure-spec
+                                             (append shared-args args) t)))
+                                (using-shared-args
+                                 (setq args (append shared-args args)))
+                                (ensure-spec
+                                 (setq args (setup--ensure ensure-spec args t)))))
                              (push (apply fn args) aggr)
                              (setq args rest)))
                          (macroexp-progn (nreverse aggr)))))))
@@ -379,12 +451,12 @@ VAL into one s-expression."
                                 (intern (format "%s-mode" feature)))))
                     (setup-bind body
                       (feature feature)
-                      (mode (or (get features 'setup-mode) mode))
-                      (func (or (get features 'setup-func) mode))
-                      (hook (or (get features 'setup-hook)
+                      (mode (or (get feature 'setup-mode) mode))
+                      (func (or (get feature 'setup-func) mode))
+                      (hook (or (get feature 'setup-hook)
                                 (get mode 'setup-hook)
                                 (intern (format "%s-hook" mode))))
-                      (map (or (get features 'setup-map)
+                      (map (or (get feature 'setup-map)
                                (get mode 'setup-map)
                                (intern (format "%s-map" mode))))))
                 body)
@@ -529,6 +601,7 @@ The first FEATURE can be used to deduce the feature context."
   :documentation "Bind into keys into the map of FEATURE-OR-MAP.
 The arguments REST are handled as by `:bind'."
   :debug '(sexp &rest form sexp)
+  :ensure '(nil &rest kbd func)
   :indent 1)
 
 (setup-define :hook
@@ -625,7 +698,7 @@ supported:
   :documentation "Add FUNCTION to HOOK only in buffers of the current mode."
   :debug '(symbolp sexp)
   :ensure '(nil func)
-  :repeatable t)
+  :repeatable '(1 . 1))
 
 (setup-define :also-load
   (lambda (feature)
